@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Travel Buddy Expense Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 16px;
+            background: #f9f9f9;
+        }
+        h1, h2 { color: #333; }
+        section {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        input, select, button {
+            padding: 10px;
+            margin: 6px 0;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            font-size: 16px;
+        }
+        button {
+            background: #007aff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button.delete { background: #ff3b30; }
+        button.edit   { background: #ff9500; margin-right: 6px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        #chart-container {
+            width: 100%;
+            max-width: 340px;
+            margin: 20px auto;
+        }
+        .actions { white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <h1>Travel Buddy Expense Tracker</h1>
+
+    <!-- Currency Converter -->
+    <section>
+        <h2>KRW ¡÷ HKD Converter</h2>
+        <input type="number" id="krw-input" placeholder="Amount in KRW" step="any">
+        <button onclick="convertCurrency()">Convert</button>
+        <p id="hkd-output" style="margin-top:12px; font-weight:bold;"></p>
+    </section>
+
+    <!-- Manage Buddies -->
+    <section>
+        <h2>Travel Buddies</h2>
+        <input type="text" id="buddy-name" placeholder="Add buddy name">
+        <button onclick="addBuddy()">Add</button>
+        <ul id="buddies-list" style="padding-left:20px; margin-top:12px;"></ul>
+    </section>
+
+    <!-- Add Expense -->
+    <section>
+        <h2>Add New Expense</h2>
+        <select id="category">
+            <option value="Food">Food</option>
+            <option value="Leisure">Leisure</option>
+            <option value="Shopping">Shopping</option>
+            <option value="Transport">Transport</option>
+            <option value="Other">Other</option>
+        </select>
+        <input type="number" id="amount-krw" placeholder="Amount (KRW)" step="any">
+        <select id="paid-by"></select>
+        <button onclick="addExpense()">Add Expense</button>
+    </section>
+
+    <!-- Expense List -->
+    <section>
+        <h2>Expense Records</h2>
+        <table id="expenses-table">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>KRW</th>
+                    <th>HKD</th>
+                    <th>Paid By</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </section>
+
+    <!-- Summary & Chart -->
+    <section>
+        <h2>Summary</h2>
+        <p id="total-hkd" style="font-size:1.2em; font-weight:bold;"></p>
+        <div id="chart-container">
+            <canvas id="spending-chart"></canvas>
+        </div>
+    </section>
+
+    <!-- Balances -->
+    <section>
+        <h2>Who owes whom?</h2>
+        <ul id="balances-list" style="padding-left:20px;"></ul>
+        <p id="repayments" style="margin-top:16px; font-style:italic;"></p>
+    </section>
+
+    <script>
+        let exchangeRate = 0; // HKD per 1 KRW
+        let buddies = [];
+        let expenses = [];    // {id, category, amountKrw, amountHkd, paidBy}
+        let nextId = 1;
+        let chart;
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 1. Currency
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        async function fetchExchangeRate() {
+            try {
+                const res = await fetch('https://api.frankfurter.app/latest?from=KRW&to=HKD');
+                const data = await res.json();
+                exchangeRate = data.rates.HKD;
+            } catch (err) {
+                console.error(err);
+                exchangeRate = 0.00575; // fallback ~2024-2025 avg
+            }
+        }
+
+        function krwToHkd(krw) {
+            return Number((krw * exchangeRate).toFixed(2));
+        }
+
+        async function convertCurrency() {
+            if (exchangeRate === 0) await fetchExchangeRate();
+            const input = document.getElementById('krw-input');
+            const output = document.getElementById('hkd-output');
+            const krw = parseFloat(input.value);
+            if (!krw || isNaN(krw)) {
+                output.textContent = "Please enter a valid amount";
+                return;
+            }
+            output.textContent = `${krw.toLocaleString()} KRW ? ${krwToHkd(krw).toLocaleString()} HKD`;
+        }
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 2. Buddies
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        function addBuddy() {
+            const name = document.getElementById('buddy-name').value.trim();
+            if (!name || buddies.includes(name)) {
+                alert("Please enter a unique name");
+                return;
+            }
+            buddies.push(name);
+            updateBuddiesList();
+            updatePaidBy();
+            saveData();
+            document.getElementById('buddy-name').value = '';
+        }
+
+        function updateBuddiesList() {
+            const ul = document.getElementById('buddies-list');
+            ul.innerHTML = buddies.map(n => `<li>${n}</li>`).join('');
+        }
+
+        function updatePaidBy() {
+            const sel = document.getElementById('paid-by');
+            sel.innerHTML = buddies.map(n => `<option value="${n}">${n}</option>`).join('');
+        }
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 3. Expenses ¡V Add / Edit / Delete
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        async function addExpense(isEdit = false, editId = null) {
+            if (exchangeRate === 0) await fetchExchangeRate();
+
+            const cat   = document.getElementById('category').value;
+            const krwEl = document.getElementById('amount-krw');
+            const paid  = document.getElementById('paid-by').value;
+
+            const krw = parseFloat(krwEl.value);
+            if (isNaN(krw) || krw <= 0 || !paid) {
+                alert("Please fill amount and who paid");
+                return;
+            }
+
+            const hkd = krwToHkd(krw);
+
+            if (isEdit) {
+                const exp = expenses.find(e => e.id === editId);
+                if (exp) {
+                    exp.category  = cat;
+                    exp.amountKrw = krw;
+                    exp.amountHkd = hkd;
+                    exp.paidBy    = paid;
+                }
+            } else {
+                expenses.push({
+                    id: nextId++,
+                    category: cat,
+                    amountKrw: krw,
+                    amountHkd: hkd,
+                    paidBy: paid
+                });
+            }
+
+            updateExpensesTable();
+            updateSummary();
+            updateBalances();
+            saveData();
+
+            // Reset form
+            krwEl.value = '';
+            if (isEdit) cancelEdit();
+        }
+
+        function editExpense(id) {
+            const exp = expenses.find(e => e.id === id);
+            if (!exp) return;
+
+            document.getElementById('category').value = exp.category;
+            document.getElementById('amount-krw').value = exp.amountKrw;
+            document.getElementById('paid-by').value = exp.paidBy;
+
+            // Change button to Update
+            const btn = document.querySelector('section button[onclick*="addExpense()"]');
+            btn.textContent = "Update Expense";
+            btn.onclick = () => addExpense(true, id);
+
+            // Add cancel button
+            let cancelBtn = document.getElementById('cancel-edit');
+            if (!cancelBtn) {
+                cancelBtn = document.createElement('button');
+                cancelBtn.id = 'cancel-edit';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.style.background = '#8e8e93';
+                cancelBtn.style.marginLeft = '12px';
+                cancelBtn.onclick = cancelEdit;
+                btn.parentNode.appendChild(cancelBtn);
+            }
+        }
+
+        function cancelEdit() {
+            document.getElementById('category').value = 'Food';
+            document.getElementById('amount-krw').value = '';
+            document.getElementById('paid-by').value = '';
+
+            const btn = document.querySelector('section button[onclick*="addExpense(true"]') ||
+                        document.querySelector('section button');
+            btn.textContent = "Add Expense";
+            btn.onclick = () => addExpense();
+
+            const cancel = document.getElementById('cancel-edit');
+            if (cancel) cancel.remove();
+        }
+
+        function deleteExpense(id) {
+            if (!confirm("Delete this expense?")) return;
+            expenses = expenses.filter(e => e.id !== id);
+            updateExpensesTable();
+            updateSummary();
+            updateBalances();
+            saveData();
+        }
+
+        function updateExpensesTable() {
+            const tbody = document.getElementById('expenses-table').querySelector('tbody');
+            tbody.innerHTML = expenses.map(exp => `
+                <tr>
+                    <td>${exp.category}</td>
+                    <td>${exp.amountKrw.toLocaleString()}</td>
+                    <td>${exp.amountHkd.toLocaleString()}</td>
+                    <td>${exp.paidBy}</td>
+                    <td class="actions">
+                        <button class="edit"   onclick="editExpense(${exp.id})">Edit</button>
+                        <button class="delete" onclick="deleteExpense(${exp.id})">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 4. Summary & Chart
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        function updateSummary() {
+            const totals = { Food:0, Leisure:0, Shopping:0, Transport:0, Other:0 };
+            let totalHkd = 0;
+
+            expenses.forEach(e => {
+                totals[e.category] += e.amountHkd;
+                totalHkd += e.amountHkd;
+            });
+
+            document.getElementById('total-hkd').textContent =
+                `Total Spending: ${totalHkd.toLocaleString()} HKD`;
+
+            const ctx = document.getElementById('spending-chart').getContext('2d');
+            if (chart) chart.destroy();
+
+            chart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(totals),
+                    datasets: [{
+                        data: Object.values(totals),
+                        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { position: 'bottom' } }
+                }
+            });
+        }
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 5. Balances & Settlements
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        function updateBalances() {
+            if (buddies.length === 0) {
+                document.getElementById('balances-list').innerHTML = '<li>Add buddies first</li>';
+                document.getElementById('repayments').textContent = '';
+                return;
+            }
+
+            const total = expenses.reduce((sum, e) => sum + e.amountHkd, 0);
+            const share = total / buddies.length;
+
+            const paid = {};
+            buddies.forEach(b => paid[b] = 0);
+            expenses.forEach(e => paid[e.paidBy] += e.amountHkd);
+
+            const balances = {};
+            buddies.forEach(b => {
+                balances[b] = paid[b] - share;
+            });
+
+            const list = document.getElementById('balances-list');
+            list.innerHTML = buddies.map(b => {
+                const val = balances[b];
+                const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : '';
+                return `<li class="${cls}">${b}: ${val.toFixed(2)} HKD</li>`;
+            }).join('');
+
+            // Simple repayment suggestions
+            let msg = '';
+            const owes = buddies.filter(b => balances[b] < 0);
+            const gets = buddies.filter(b => balances[b] > 0);
+
+            if (owes.length === 0 && gets.length === 0) {
+                msg = "Everyone is settled ?";
+            } else {
+                owes.forEach(debtor => {
+                    let debt = -balances[debtor];
+                    gets.forEach(creditor => {
+                        if (debt <= 0 || balances[creditor] <= 0) return;
+                        const pay = Math.min(debt, balances[creditor]);
+                        msg += `${debtor} ¡÷ ${creditor}  ${pay.toFixed(2)} HKD<br>`;
+                        debt -= pay;
+                        balances[creditor] -= pay;
+                    });
+                });
+            }
+
+            document.getElementById('repayments').innerHTML = msg;
+        }
+
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        // 6. Persistence
+        // ¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w¢w
+        function loadData() {
+            const b = localStorage.getItem('travelBuddies');
+            const e = localStorage.getItem('travelExpenses');
+            const nid = localStorage.getItem('travelNextId');
+
+            if (b) buddies = JSON.parse(b);
+            if (e) expenses = JSON.parse(e);
+            if (nid) nextId = parseInt(nid, 10);
+
+            updateBuddiesList();
+            updatePaidBy();
+            updateExpensesTable();
+            updateSummary();
+            updateBalances();
+        }
+
+        function saveData() {
+            localStorage.setItem('travelBuddies', JSON.stringify(buddies));
+            localStorage.setItem('travelExpenses', JSON.stringify(expenses));
+            localStorage.setItem('travelNextId', nextId);
+        }
+
+        // Init
+        loadData();
+        fetchExchangeRate(); // warm up
+    </script>
+</body>
+</html>
